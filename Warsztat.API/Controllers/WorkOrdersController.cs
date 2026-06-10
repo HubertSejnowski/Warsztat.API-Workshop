@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
 using Microsoft.EntityFrameworkCore;
 using Warsztat.API.Data;
 using Warsztat.API.DT0S;
@@ -52,16 +54,17 @@ namespace Warsztat.API.Controllers
 
         // POST: api/workorders
         [HttpPost]
+        [Authorize(Roles = "Admin,Reception")]
         public async Task<ActionResult<WorkOrderDto>> CreateWorkOrder(CreateWorkOrderDto createDto)
         {
-            // Walidacja: Czy pojazd istnieje w systemie
+            // 1. Sprawdzamy, czy auto istnieje
             var vehicleExists = await _context.Vehicles.AnyAsync(v => v.Id == createDto.VehicleId);
             if (!vehicleExists)
             {
                 return BadRequest("Podany pojazd nie istnieje w bazie danych.");
             }
 
-            // Jeśli wybrano stanowisko, sprawdź czy istnieje
+            // 2. Obsługa stanowiska (wykona się TYLKO, gdy workstationId nie jest null)
             if (createDto.WorkstationId.HasValue)
             {
                 var workstationExists = await _context.Workstations.AnyAsync(w => w.Id == createDto.WorkstationId.Value);
@@ -69,30 +72,36 @@ namespace Warsztat.API.Controllers
                 {
                     return BadRequest("Podane stanowisko warsztatowe nie istnieje.");
                 }
+
+                // WALIDACJA HARMONOGRAMU (Teraz jest bezpiecznie schowana wewnątrz if'a)
+                var isOccupied = await _context.WorkOrders.AnyAsync(wo =>
+                    wo.WorkstationId == createDto.WorkstationId.Value &&
+                    (wo.Status == OrderStatus.Planned || wo.Status == OrderStatus.InProgress) &&
+                    wo.ScheduledDate.Date == createDto.ScheduledDate.Date &&
+                    wo.ScheduledDate.Hour == createDto.ScheduledDate.Hour);
+
+                if (isOccupied)
+                {
+                    return BadRequest("Błąd harmonogramu: Wybrane stanowisko jest już zajęte w tym terminie!");
+                }
             }
 
+            // 3. Zapisujemy zlecenie do bazy
             var order = new WorkOrder
             {
                 Description = createDto.Description,
                 ScheduledDate = createDto.ScheduledDate,
                 VehicleId = createDto.VehicleId,
-                WorkstationId = createDto.WorkstationId,
+                WorkstationId = createDto.WorkstationId, // Tu zapisze się int albo null
                 Status = OrderStatus.Planned
             };
 
             _context.WorkOrders.Add(order);
             await _context.SaveChangesAsync();
 
-            return CreatedAtAction(nameof(GetWorkOrders), new { id = order.Id }, new WorkOrderDto
-            {
-                Id = order.Id,
-                Description = order.Description,
-                Status = order.Status.ToString(),
-                ScheduledDate = order.ScheduledDate,
-                VehicleId = order.VehicleId,
-                WorkstationId = order.WorkstationId
-            });
+            return Ok($"Zlecenie nr {order.Id} zostało pomyślnie zapisane w harmonogramie.");
         }
+        
 
         // POST: api/workorders/{id}/parts
         [HttpPost("{id}/parts")]
@@ -123,5 +132,60 @@ namespace Warsztat.API.Controllers
 
             return Ok($"Pomyślnie dodano część do zlecenia. Do naliczenia: {partDto.Quantity}x {part.Name} (OEM: {part.IsOEM})");
         }
+
+        [HttpGet("{id}/summary")]
+        [Authorize(Roles = "Admin,Reception")]
+        public async Task<ActionResult<OrderSummaryDto>> GetOrderSummary(int id)
+        {
+            var order = await _context.WorkOrders
+                .Include(wo => wo.Vehicle)
+                    .ThenInclude(v => v.Customer)
+                .Include(wo => wo.UsedParts)
+                    .ThenInclude(up => up.Part)   // Wyciągamy szczegóły części
+                .FirstOrDefaultAsync(wo => wo.Id == id);
+
+            if (order == null)
+            {
+                return NotFound("Nie znaleziono zlecenia.");
+            }
+
+            // Obliczamy całkowity koszt użytych części
+            decimal totalPartsCost = order.UsedParts.Sum(up => up.Quantity * (up.Part != null ? up.Part.UnitPrice : 0));
+
+            // Dodajemy stałą opłatę za robociznę (w przyszłości można to przenieść do bazy)
+            decimal laborCost = 150.00m;
+            decimal finalCost = totalPartsCost + laborCost;
+
+            // Budujemy ładne podsumowanie
+            var summary = new OrderSummaryDto
+            {
+                OrderId = order.Id,
+                CustomerFullName = order.Vehicle?.Customer != null
+                    ? $"{order.Vehicle.Customer.FirstName} {order.Vehicle.Customer.LastName} (Tel: {order.Vehicle.Customer.PhoneNumber})"
+                    : "Klient nieznany",
+                VehicleInfo = $"{order.Vehicle?.Brand} {order.Vehicle?.Model} (VIN: {order.Vehicle?.VIN})",
+                Description = order.Description,
+                Status = order.Status.ToString(),
+                CompletionDate = order.CompletionDate,
+                Parts = order.UsedParts.Select(up => new UsedPartDto
+                {
+                    PartId = up.PartId,
+                    PartName = up.Part != null ? up.Part.Name : "Nieznana część",
+                    PartNumber = up.Part != null ? up.Part.PartNumber : string.Empty,
+                    IsOEM = up.Part != null ? up.Part.IsOEM : false,
+                    Quantity = up.Quantity,
+                    TotalPrice = up.Quantity * (up.Part != null ? up.Part.UnitPrice : 0)
+                }).ToList(),
+                TotalCost = finalCost
+            };
+
+            return Ok(summary);
+
+
+        }
+
+
+
+
     }
 }
