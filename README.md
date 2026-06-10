@@ -58,3 +58,38 @@ The codebase strictly adheres to clean coding practices and standard architectur
    ```bash
    git clone [https://github.com/your-username/Warsztat.API.git](https://github.com/your-username/Warsztat.API.git)
    cd Warsztat.API
+
+2. Open appsettings.json and adjust your connection string if needed:
+
+JSON
+"ConnectionStrings": {
+  "DefaultConnection": "Server=(localdb)\\mssqllocaldb;Database=WorkshopManagementDb;Trusted_Connection=True;"
+}
+Running Migrations & Database Setup
+Execute the following commands in the Package Manager Console or your preferred CLI terminal to spin up the database schema and initialize seeding data:
+
+PowerShell
+Update-Database
+Execution
+Run the application via Visual Studio or via terminal command:
+
+Bash
+dotnet run
+Once launched, navigate to http://localhost:your-port/swagger to explore the interactive API documentation and test endpoints.
+
+🗺️ Roadmap
+[x] Secure JWT Token Authorization with custom middleware integration.
+
+[x] Intelligent scheduling and bay occupancy guardrails.
+
+[x] Fully integrated parts inventory system linked to billing.
+
+[ ] Containerization utilizing Docker and Docker-Compose for multi-service environments.
+
+[ ] Front-end application utilizing React.js to build an interactive dashboard UI.
+
+[ ] Automated PDF generator module for invoices.
+
+
+
+   
